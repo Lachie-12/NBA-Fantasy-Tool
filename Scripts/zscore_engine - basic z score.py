@@ -76,7 +76,7 @@ def build_rankings(df: pd.DataFrame) -> pd.DataFrame:
 
     z["TOTAL_Z"] = z.sum(axis=1)
 
-    result = pool[["PLAYER_NAME", "TEAM_ABBREVIATION", "GP", "MIN"]].join(z)
+    result = pool[["PLAYER_ID", "PLAYER_NAME", "TEAM_ABBREVIATION", "GP", "MIN"]].join(z)
     result = result.sort_values("TOTAL_Z", ascending=False).reset_index(drop=True)
     result.insert(0, "RANK", result.index + 1)
     return result.round(2)
