@@ -1,0 +1,3 @@
+# Python bytecode cache - auto-generated, not source code
+__pycache__/
+*.pyc
