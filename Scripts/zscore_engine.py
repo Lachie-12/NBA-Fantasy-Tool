@@ -112,7 +112,7 @@ def build_rankings(df: pd.DataFrame, weights: dict | None = None, total_col: str
     z = compute_category_zscores(pool)
     z[total_col] = weighted_total(z, weights)
 
-    result = pool[["PLAYER_NAME", "TEAM_ABBREVIATION", "GP", "MIN"]].join(z)
+    result = pool[["PLAYER_ID","PLAYER_NAME", "TEAM_ABBREVIATION", "GP", "MIN"]].join(z)
     result = result.sort_values(total_col, ascending=False).reset_index(drop=True)
     result.insert(0, "RANK", result.index + 1)
     return result.round(2)
@@ -147,3 +147,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
