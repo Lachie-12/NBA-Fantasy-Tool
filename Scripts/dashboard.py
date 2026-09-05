@@ -215,4 +215,4 @@ numeric_cols = filtered_df.select_dtypes(include="number").columns
 styled = styled.format(precision=2, subset=numeric_cols)
 
 # --- 3. Table filling remaining space ---
-st.dataframe(styled, use_container_width=True, height=650, hide_index=True)
+st.dataframe(styled, width='stretch', height=650, hide_index=True)
