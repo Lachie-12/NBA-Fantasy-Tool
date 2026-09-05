@@ -46,6 +46,21 @@ PUNT_LABEL_TO_CAT = {
     "FT%": "FT_PCT",
 }
 
+# Ranking Method dropdown shows friendly labels; the engine's build_rankings()
+# takes a plain "zscore" / "gscore" string. Same explicit-mapping pattern as
+# PUNT_LABEL_TO_CAT above, for the same reason -- one place to update if
+# either side's naming changes.
+#
+# Note: G-Score is currently running on placeholder category-shrinkage
+# weights (see GSCORE_SHRINKAGE in zscore_engine.py), not real per-player
+# game-to-game variance -- that needs a game-log data pull we haven't built
+# yet. It's a reasonable approximation of DURANT's intent, not the real
+# Basketball Monster formula.
+METHOD_LABEL_TO_METHOD = {
+    "Standard (Z-Score)": "zscore",
+    "G-Score (DURANT-style)": "gscore",
+}
+
 
 def _is_stale(path: Path, hours: float) -> bool:
     """No file at all counts as stale (forces a first-time pull)."""
@@ -64,7 +79,8 @@ def _is_stale(path: Path, hours: float) -> bool:
 #   - the refresh-on-launch check below therefore only fires once per
 #     launch too, NOT once per dropdown click, since load_raw_stats()
 #     itself is cached and won't re-run just because a widget changed
-#   - rankings are only recomputed when the punt selection actually changes
+#   - rankings are only recomputed when the punt selection or ranking
+#     method actually changes (st.cache_data keys on both arguments)
 @st.cache_data
 def load_raw_stats() -> pd.DataFrame:
     if _is_stale(RAW_STATS_PATH, STALE_AFTER_HOURS):
@@ -85,12 +101,12 @@ def load_raw_stats() -> pd.DataFrame:
 
 
 @st.cache_data
-def compute_rankings(punt_category: str | None) -> pd.DataFrame:
+def compute_rankings(punt_category: str | None, method: str) -> pd.DataFrame:
     raw = load_raw_stats()
     weights = {punt_category: 0} if punt_category else None
-    # total_col fixed at "TOTAL_Z" regardless of punt, so the dashboard
-    # never has to branch on column naming depending on punt state.
-    return build_rankings(raw, weights=weights, total_col="TOTAL_Z")
+    # total_col fixed at "TOTAL_Z" regardless of punt or method, so the
+    # dashboard never has to branch on column naming depending on either.
+    return build_rankings(raw, weights=weights, total_col="TOTAL_Z", method=method)
 
 
 raw_stats = load_raw_stats()
@@ -103,7 +119,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)    
 
 # --- 2. Filters row ---
-filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
+filter_col1, filter_col2, filter_col3, filter_col4, filter_col5, filter_col6 = st.columns(6)
 
 with filter_col1:
     time_period = st.selectbox("Time Period", ["Season", "Last 30 Days", "Last 14 Days", "Last 7 Days"])
@@ -117,9 +133,13 @@ with filter_col4:
 with filter_col5:
     num_players = st.selectbox("Number of Players", ["150", "200", "All Players"])
 
-# --- Resolve punt selection to an engine category, then compute rankings ---
+with filter_col6:
+    method_label = st.selectbox("Ranking Method", list(METHOD_LABEL_TO_METHOD.keys()))
+
+# --- Resolve dropdown selections to engine inputs, then compute rankings ---
 punt_category = PUNT_LABEL_TO_CAT.get(punt) if punt != "None" else None
-zscores = compute_rankings(punt_category)
+method = METHOD_LABEL_TO_METHOD[method_label]
+zscores = compute_rankings(punt_category, method)
 
 # --- Merge raw stats with the live-computed z-scores on PLAYER_ID ---
 merged = pd.merge(
@@ -215,4 +235,4 @@ numeric_cols = filtered_df.select_dtypes(include="number").columns
 styled = styled.format(precision=2, subset=numeric_cols)
 
 # --- 3. Table filling remaining space ---
-st.dataframe(styled, width='stretch', height=650, hide_index=True)
+st.dataframe(styled, use_container_width=True, height=650, hide_index=True)
