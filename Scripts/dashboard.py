@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+from pathlib import Path
+
+from zscore_engine import build_rankings
 
 st.set_page_config(layout="wide", page_title="NBA Fantasy Rankings")
 
@@ -18,11 +21,69 @@ st.markdown("""
 # --- 1. Header, top-left ---
 st.markdown("### NBA Fantasy Rankings")
 
-# --- Load both data sources ---
-raw_stats = pd.read_csv("player_stats_2025-26.csv")
-zscores = pd.read_csv("zscore_rankings_2025-26.csv")
+# --- Data paths ---
+RAW_STATS_PATH = Path(__file__).parent / "player_stats_2025-26.csv"
 
-# --- Merge raw stats with z-scores on PLAYER_ID (robust to name/spelling mismatches) ---
+# The Punt dropdown shows friendly labels; the engine's ALL_CATS uses a
+# couple of different internal names (FG_PCT / FT_PCT instead of FG% / FT%).
+# Everything else already matches, but we map all of them explicitly so this
+# doesn't silently break if either side's naming changes later.
+PUNT_LABEL_TO_CAT = {
+    "PTS": "PTS",
+    "REB": "REB",
+    "AST": "AST",
+    "STL": "STL",
+    "BLK": "BLK",
+    "FG3M": "FG3M",
+    "TOV": "TOV",
+    "FG%": "FG_PCT",
+    "FT%": "FT_PCT",
+}
+
+
+# --- Cached data loading and ranking computation ---
+# Streamlit reruns this whole script on every widget interaction, so without
+# caching, changing an unrelated filter (like Number of Players) would
+# needlessly redo the full z-score calculation. Splitting this into two
+# cached steps means:
+#   - the CSV is only ever read from disk once
+#   - rankings are only recomputed when the punt selection actually changes
+@st.cache_data
+def load_raw_stats() -> pd.DataFrame:
+    return pd.read_csv(RAW_STATS_PATH)
+
+
+@st.cache_data
+def compute_rankings(punt_category: str | None) -> pd.DataFrame:
+    raw = load_raw_stats()
+    weights = {punt_category: 0} if punt_category else None
+    # total_col fixed at "TOTAL_Z" regardless of punt, so the dashboard
+    # never has to branch on column naming depending on punt state.
+    return build_rankings(raw, weights=weights, total_col="TOTAL_Z")
+
+
+raw_stats = load_raw_stats()
+
+# --- 2. Filters row ---
+filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
+
+with filter_col1:
+    time_period = st.selectbox("Time Period", ["Season", "Last 30 Days", "Last 14 Days", "Last 7 Days"])
+
+with filter_col2:
+    punt = st.selectbox("Punt", ["None", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV", "FG%", "FT%"])
+
+with filter_col4:
+    position = st.selectbox("Position", ["All Positions", "PG", "SG", "SF", "PF", "C"])
+
+with filter_col5:
+    num_players = st.selectbox("Number of Players", ["150", "200", "All Players"])
+
+# --- Resolve punt selection to an engine category, then compute rankings ---
+punt_category = PUNT_LABEL_TO_CAT.get(punt) if punt != "None" else None
+zscores = compute_rankings(punt_category)
+
+# --- Merge raw stats with the live-computed z-scores on PLAYER_ID ---
 merged = pd.merge(
     raw_stats,
     zscores,
@@ -58,24 +119,9 @@ display_df = merged[[
 # Keep default sort by TOTAL_Z (RANK already reflects this order)
 display_df = display_df.sort_values("RANK")
 
-# --- 2. Filters row ---
-filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
-
-with filter_col1:
-    time_period = st.selectbox("Time Period", ["Season", "Last 30 Days", "Last 14 Days", "Last 7 Days"])
-
-with filter_col2:
-    punt = st.selectbox("Punt", ["None", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV", "FG%", "FT%"])
-
 with filter_col3:
     teams = ["All Teams"] + sorted(display_df["TEAM"].unique().tolist())
     team = st.selectbox("Team", teams)
-
-with filter_col4:
-    position = st.selectbox("Position", ["All Positions", "PG", "SG", "SF", "PF", "C"])
-
-with filter_col5:
-    num_players = st.selectbox("Number of Players", ["150", "200", "All Players"])
 
 # --- Apply filters to a working copy of the data ---
 filtered_df = display_df.copy()
