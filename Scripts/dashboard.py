@@ -95,10 +95,12 @@ def compute_rankings(punt_category: str | None) -> pd.DataFrame:
 
 raw_stats = load_raw_stats()
 
-# --- 1. Header, top-left, with a last-updated indicator directly beneath it ---
+# --- 1. Header, top-left, with a subtle last-updated indicator directly beneath it ---
 last_updated = datetime.fromtimestamp(RAW_STATS_PATH.stat().st_mtime).strftime("%d %b %Y, %I:%M %p")
-st.markdown("### NBA Fantasy Rankings")
-st.markdown(f"**Data last updated:** {last_updated}")
+st.markdown(f"""
+    <h3 style="margin-bottom: 0.1rem;">NBA Fantasy Rankings</h3>
+    <p style="font-size: 10px; color: #b0b0b0; margin-top: 0; margin-bottom: 0.3rem;">Data last updated: {last_updated}</p>
+""", unsafe_allow_html=True)    
 
 # --- 2. Filters row ---
 filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
