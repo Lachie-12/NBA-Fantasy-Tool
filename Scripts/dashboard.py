@@ -1,8 +1,12 @@
-import streamlit as st
-import pandas as pd
+import time
+from datetime import datetime
 from pathlib import Path
 
+import streamlit as st
+import pandas as pd
+
 from zscore_engine import build_rankings
+import pull_player_stats
 
 st.set_page_config(layout="wide", page_title="NBA Fantasy Rankings")
 
@@ -18,11 +22,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 1. Header, top-left ---
-st.markdown("### NBA Fantasy Rankings")
-
 # --- Data paths ---
 RAW_STATS_PATH = Path(__file__).parent / "player_stats_2025-26.csv"
+
+# How old the CSV is allowed to get before we bother re-pulling on launch.
+# Tweak this freely -- lower = fresher data but more NBA.com calls,
+# higher = fewer calls but a longer window where you could be stale.
+STALE_AFTER_HOURS = 6
 
 # The Punt dropdown shows friendly labels; the engine's ALL_CATS uses a
 # couple of different internal names (FG_PCT / FT_PCT instead of FG% / FT%).
@@ -41,15 +47,40 @@ PUNT_LABEL_TO_CAT = {
 }
 
 
+def _is_stale(path: Path, hours: float) -> bool:
+    """No file at all counts as stale (forces a first-time pull)."""
+    if not path.exists():
+        return True
+    age_hours = (time.time() - path.stat().st_mtime) / 3600
+    return age_hours > hours
+
+
 # --- Cached data loading and ranking computation ---
 # Streamlit reruns this whole script on every widget interaction, so without
 # caching, changing an unrelated filter (like Number of Players) would
 # needlessly redo the full z-score calculation. Splitting this into two
 # cached steps means:
-#   - the CSV is only ever read from disk once
+#   - the CSV is only ever read from disk once per app launch
+#   - the refresh-on-launch check below therefore only fires once per
+#     launch too, NOT once per dropdown click, since load_raw_stats()
+#     itself is cached and won't re-run just because a widget changed
 #   - rankings are only recomputed when the punt selection actually changes
 @st.cache_data
 def load_raw_stats() -> pd.DataFrame:
+    if _is_stale(RAW_STATS_PATH, STALE_AFTER_HOURS):
+        try:
+            with st.spinner("Refreshing player stats from NBA.com..."):
+                pull_player_stats.main()
+        except Exception as e:
+            # Don't crash the dashboard over a failed refresh -- fall back
+            # to whatever's already on disk (if anything) and surface a
+            # visible warning instead. The "last updated" line further
+            # down does the rest of the job of making staleness obvious.
+            if RAW_STATS_PATH.exists():
+                st.warning(f"Couldn't refresh data from NBA.com ({e}). Showing last saved data instead.")
+            else:
+                st.error(f"No cached data exists and the refresh failed: {e}")
+                st.stop()
     return pd.read_csv(RAW_STATS_PATH)
 
 
@@ -63,6 +94,11 @@ def compute_rankings(punt_category: str | None) -> pd.DataFrame:
 
 
 raw_stats = load_raw_stats()
+
+# --- 1. Header, top-left, with a last-updated indicator directly beneath it ---
+last_updated = datetime.fromtimestamp(RAW_STATS_PATH.stat().st_mtime).strftime("%d %b %Y, %I:%M %p")
+st.markdown("### NBA Fantasy Rankings")
+st.markdown(f"**Data last updated:** {last_updated}")
 
 # --- 2. Filters row ---
 filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
