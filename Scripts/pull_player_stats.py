@@ -13,6 +13,7 @@ for schedule-adjusted projections and true weekly time windows, but for a
 first "does the pipeline work" pass, this is the right level of complexity.
 """
 
+import time
 from pathlib import Path
 from nba_api.stats.endpoints import leaguedashplayerstats
 import pandas as pd
@@ -20,6 +21,11 @@ import pandas as pd
 # --- Settings you may want to tweak ---
 SEASON = "2025-26"
 SEASON_TYPE = "Regular Season"   # could also be "Playoffs" later, not relevant yet
+
+# Retry settings for stats.nba.com, which is prone to slow responses/timeouts.
+MAX_RETRIES = 3
+REQUEST_TIMEOUT = 45       # seconds per attempt (nba_api's own default is 30)
+RETRY_BACKOFF_SECONDS = 5  # base delay; doubles each retry (5s, 10s, 20s...)
 
 # Columns we care about for a 9-cat league:
 # - Counting stats: PTS, REB, AST, STL, BLK, FG3M, TOV
@@ -36,14 +42,38 @@ KEEP_COLUMNS = [
 
 
 def pull_player_stats(season: str = SEASON) -> pd.DataFrame:
-    """Fetch per-game player stats for the given season from nba_api."""
-    response = leaguedashplayerstats.LeagueDashPlayerStats(
-        season=season,
-        season_type_all_star=SEASON_TYPE,
-        per_mode_detailed="PerGame",
-    )
-    df = response.get_data_frames()[0]
-    return df[KEEP_COLUMNS]
+    """
+    Fetch per-game player stats for the given season from nba_api.
+
+    Retries up to MAX_RETRIES times with exponential backoff if the request
+    times out or otherwise fails -- stats.nba.com is known to be slow/flaky,
+    and most failures clear up within a couple of attempts.
+    """
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = leaguedashplayerstats.LeagueDashPlayerStats(
+                season=season,
+                season_type_all_star=SEASON_TYPE,
+                per_mode_detailed="PerGame",
+                timeout=REQUEST_TIMEOUT,
+            )
+            df = response.get_data_frames()[0]
+            return df[KEEP_COLUMNS]
+
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                print(f"Attempt {attempt}/{MAX_RETRIES} failed ({e}). Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"Attempt {attempt}/{MAX_RETRIES} failed ({e}). No retries left.")
+
+    # All attempts exhausted -- raise the last error so the caller (e.g.
+    # dashboard.py's load_raw_stats) can catch it and fall back to cached data.
+    raise last_error
 
 
 def main():
