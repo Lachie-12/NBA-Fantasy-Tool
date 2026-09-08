@@ -29,27 +29,28 @@ zscore() already divides by (squared). tau_M**2 is the pool-level
 game-to-game variance for that category. KAPPA is a small constant
 (~1.04 for typical league sizes) that can just be hardcoded.
 
-THE CATCH: tau_M**2 requires individual game logs (how much a player's
-own output bounces around game to game), not season averages. Our
-pipeline only pulls season *averages* right now (pull_player_stats.py
-uses LeagueDashPlayerStats in PerGame mode), so real tau_M isn't
-available yet.
+tau_M**2 requires individual game logs (how much a player's own output
+bounces around game to game), not season averages -- which is why this
+needed its own separate pull (pull_game_logs.py) and its own
+calculation step (compute_gscore_tau.py), on top of the season-average
+pull pull_player_stats.py already does for the z-score side.
 
-PLACEHOLDER STRATEGY (until game logs are wired in): rather than
-guessing at absolute noise numbers on a scale that might not match our
-own sigma, we borrow the *relative* shrinkage each category received in
-Rosenof's real-world 2022-23 NBA analysis (Table 8) -- i.e. what
-fraction of its z-score weight each category kept once game-to-game
-noise was accounted for. Steals kept only 44%, assists kept 75%, etc.
-Applying that fraction directly to our own z-scores approximates the
-*shape* of the G-score adjustment using real basketball variance
-patterns, without needing game logs yet.
+GSCORE_SHRINKAGE below is now computed from this project's own 2025-26
+game logs (game-level noise, not week-level -- see the chat history for
+why game level was chosen over week level for this league format), via
+compute_gscore_tau.py. It is NOT personalized per player -- every
+player in a category is shrunk by the same category-wide factor,
+matching the G-score paper's own simplifying assumption
+(tau_M(p) ~= tau_M) rather than a shortcut unique to this project. A
+consistently-good shot-blocker and a streaky one still get treated
+identically.
 
-THIS IS A STAND-IN. It borrows relationships between categories from a
-different season, pool, and format assumptions -- not truth computed
-from this season's actual data. Swap it for the real formula above
-once pull_player_stats.py (or a new sibling script) pulls game logs and
-we can compute genuine per-category tau_M values.
+These values are specific to the 2025-26 season and will drift as
+future seasons play out -- rerun compute_gscore_tau.py periodically
+(e.g. once a new season has enough games banked) rather than treating
+this dict as permanent. Early in a fresh season, before enough games
+exist to recompute tau reliably, falling back to these numbers as a
+stand-in is a reasonable stopgap.
 """
 
 from pathlib import Path
@@ -63,22 +64,21 @@ COUNTING_CATS = ["PTS", "REB", "AST", "STL", "BLK", "FG3M"]
 NEGATIVE_CATS = ["TOV"]  # lower is better, so we invert the z-score
 ALL_CATS = ["PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV", "FG_PCT", "FT_PCT"]
 
-# Placeholder G-score shrinkage factors -- see module docstring.
-# Source: Rosenof (2023), "Static quantification of player value for
-# fantasy basketball", Table 8 (real 2022-23 NBA season data).
-# Value = G-score denominator's weight relative to z-score's (i.e. how
-# much of the category's z-score value survives once game-to-game noise
-# is priced in). Replace with computed values once game logs exist.
+# G-score shrinkage factors -- see module docstring. Computed from this
+# project's own 2025-26 game-log data via compute_gscore_tau.py
+# (26,651 games, 582 players). Value = G-score denominator's weight
+# relative to z-score's (how much of the category's z-score value
+# survives once real game-to-game noise is priced in).
 GSCORE_SHRINKAGE = {
-    "PTS": 0.65,
-    "REB": 0.69,
-    "AST": 0.75,
-    "STL": 0.44,
-    "BLK": 0.68,
-    "FG3M": 0.72,
-    "TOV": 0.62,
-    "FG_PCT": 0.56,
-    "FT_PCT": 0.58,
+    "PTS": 0.71,
+    "REB": 0.67,
+    "AST": 0.707,
+    "STL": 0.376,
+    "BLK": 0.488,
+    "FG3M": 0.573,
+    "TOV": 0.55,
+    "FG_PCT": 0.348,
+    "FT_PCT": 0.348,
 }
 
 
