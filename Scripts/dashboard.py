@@ -5,7 +5,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
-from zscore_engine import build_rankings
+from scoring_engine import build_rankings
 import pull_player_stats
 
 st.set_page_config(layout="wide", page_title="NBA Fantasy Rankings")
@@ -52,11 +52,11 @@ PUNT_LABEL_TO_CAT = {
 # either side's naming changes.
 #
 # Note: G-Score's category-shrinkage weights (GSCORE_SHRINKAGE in
-# zscore_engine.py) are computed from this project's own 2025-26 game
+# scoring_engine.py) are computed from this project's own 2025-26 game
 # logs via compute_gscore_tau.py -- real per-player-pool game-to-game
 # variance, not a placeholder. It's still not personalized per player
 # (every player in a category shares the same shrinkage factor) -- see
-# zscore_engine.py's docstring for why that matches the G-score paper's
+# scoring_engine.py's docstring for why that matches the G-score paper's
 # own simplifying assumption rather than being a shortcut unique to
 # this project.
 METHOD_LABEL_TO_METHOD = {
@@ -147,7 +147,7 @@ zscores = compute_rankings(punt_category, method)
 # Column suffix for the score-derived columns below, so headers read "PTS_G"
 # / "TOTAL_G" when viewing G-score rankings instead of always showing "_Z"
 # regardless of method. The underlying engine always names these columns
-# with a "_Z" suffix (see zscore_engine.py -- it's method-agnostic on
+# with a "_Z" suffix (see scoring_engine.py -- it's method-agnostic on
 # purpose), so this relabeling is purely a display-layer concern and
 # belongs here in the dashboard, not in the engine.
 suffix = "Z" if method == "zscore" else "G"
