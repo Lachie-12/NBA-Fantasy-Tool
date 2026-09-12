@@ -2,24 +2,23 @@
 Phase 2 - Z-Score Ranking Engine (with punt support + G-score stub)
 -------------------------------------------------------
 Takes the per-game stat CSV from pull_player_stats.py and ranks players
-using either a 9-category z-score model or a G-score model (a documented,
-public approximation of what Basketball Monster's DURANT rankings are
-trying to achieve). Supports punting and custom weighting on top of
-either method through one shared mechanism.
+using either a 9-category z-score model or a G-score model (a public,
+peer-reviewed method that accounts for game-to-game variance on top of
+the usual player-to-player variance). Supports punting and custom
+weighting on top of either method through one shared mechanism.
 
 --- Standard z-score (see original docstring further down for full detail) ---
 Counting stats: (value - pool_mean) / pool_std, TOV inverted, FG%/FT% via
 volume-weighted impact.
 
---- G-score / DURANT-inspired scoring ---
+--- G-score scoring ---
 Standard z-score implicitly assumes every category is equally *reliable*
 week to week. In reality, some categories (steals is the extreme case)
 swing wildly from game to game even for good players, so "banking on"
 that category is inherently less certain than banking on a steadier one
 like assists -- no matter how many standard deviations above average a
 player's season total is. G-score (Rosenof, 2023, arXiv:2307.02188 --
-a public, peer-reviewed method in the same family as Basketball
-Monster's proprietary DURANT) fixes this by adding a game-to-game
+a public, peer-reviewed method) fixes this by adding a game-to-game
 "noise" term to the z-score denominator:
 
     G = (player_avg - pool_avg) / sqrt(sigma_M**2 + KAPPA * tau_M**2)
@@ -164,8 +163,7 @@ def build_rankings(
     """Filter the pool, compute category values with the chosen method,
     and rank by weighted total.
 
-    method: "zscore" (standard) or "gscore" (DURANT-inspired, placeholder
-    tau -- see module docstring).
+    method: "zscore" (standard) or "gscore" (see module docstring).
     """
     pool = df[(df["GP"] >= MIN_GP) & (df["MIN"] >= MIN_MPG)].copy()
 
@@ -184,15 +182,17 @@ def build_rankings(
     return result.round(2)
 
 
-def build_punt_rankings(df: pd.DataFrame, punt_category: str) -> pd.DataFrame:
+def build_punt_rankings(df: pd.DataFrame, punt_category: str, method: str = "zscore") -> pd.DataFrame:
     """
-    Convenience wrapper for a single-category punt (matches the Streamlit
-    dashboard's current single-select Punt dropdown). Re-ranks players with
-    the chosen category weighted to 0 -- a Durant-style punt build.
+    Convenience wrapper for a single-category punt. Re-ranks players with
+    the chosen category weighted to 0. Works with either method: "zscore"
+    (default) or "gscore" -- the punt logic is identical either way, it's
+    just weighted_total() called with one category zeroed, same as any
+    other weight dict (see module docstring).
     """
     if punt_category not in ALL_CATS:
         raise ValueError(f"punt_category must be one of {ALL_CATS}, got {punt_category!r}")
-    return build_rankings(df, weights={punt_category: 0}, total_col="DURANT_Z")
+    return build_rankings(df, weights={punt_category: 0}, total_col="TOTAL_Z", method=method)
 
 
 def build_gscore_rankings(df: pd.DataFrame, weights: dict | None = None) -> pd.DataFrame:

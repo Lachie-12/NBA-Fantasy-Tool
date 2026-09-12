@@ -51,14 +51,17 @@ PUNT_LABEL_TO_CAT = {
 # PUNT_LABEL_TO_CAT above, for the same reason -- one place to update if
 # either side's naming changes.
 #
-# Note: G-Score is currently running on placeholder category-shrinkage
-# weights (see GSCORE_SHRINKAGE in zscore_engine.py), not real per-player
-# game-to-game variance -- that needs a game-log data pull we haven't built
-# yet. It's a reasonable approximation of DURANT's intent, not the real
-# Basketball Monster formula.
+# Note: G-Score's category-shrinkage weights (GSCORE_SHRINKAGE in
+# zscore_engine.py) are computed from this project's own 2025-26 game
+# logs via compute_gscore_tau.py -- real per-player-pool game-to-game
+# variance, not a placeholder. It's still not personalized per player
+# (every player in a category shares the same shrinkage factor) -- see
+# zscore_engine.py's docstring for why that matches the G-score paper's
+# own simplifying assumption rather than being a shortcut unique to
+# this project.
 METHOD_LABEL_TO_METHOD = {
     "Standard (Z-Score)": "zscore",
-    "G-Score (DURANT-style)": "gscore",
+    "G-Score": "gscore",
 }
 
 
@@ -141,6 +144,14 @@ punt_category = PUNT_LABEL_TO_CAT.get(punt) if punt != "None" else None
 method = METHOD_LABEL_TO_METHOD[method_label]
 zscores = compute_rankings(punt_category, method)
 
+# Column suffix for the score-derived columns below, so headers read "PTS_G"
+# / "TOTAL_G" when viewing G-score rankings instead of always showing "_Z"
+# regardless of method. The underlying engine always names these columns
+# with a "_Z" suffix (see zscore_engine.py -- it's method-agnostic on
+# purpose), so this relabeling is purely a display-layer concern and
+# belongs here in the dashboard, not in the engine.
+suffix = "Z" if method == "zscore" else "G"
+
 # --- Merge raw stats with the live-computed z-scores on PLAYER_ID ---
 merged = pd.merge(
     raw_stats,
@@ -168,13 +179,19 @@ display_df = merged[[
     "TOV_RAW": "TO",
     "FG_PCT_RAW": "FG%",
     "FT_PCT_RAW": "FT%",
-    "FG3M_Z": "3s_Z",
-    "TOV_Z": "TO_Z",
-    "FG_PCT_Z": "FG%_Z",
-    "FT_PCT_Z": "FT%_Z",
+    "PTS_Z": f"PTS_{suffix}",
+    "REB_Z": f"REB_{suffix}",
+    "AST_Z": f"AST_{suffix}",
+    "STL_Z": f"STL_{suffix}",
+    "BLK_Z": f"BLK_{suffix}",
+    "FG3M_Z": f"3s_{suffix}",
+    "TOV_Z": f"TO_{suffix}",
+    "FG_PCT_Z": f"FG%_{suffix}",
+    "FT_PCT_Z": f"FT%_{suffix}",
+    "TOTAL_Z": f"TOTAL_{suffix}",
 })
 
-# Keep default sort by TOTAL_Z (RANK already reflects this order)
+# Keep default sort by the total score column (RANK already reflects this order)
 display_df = display_df.sort_values("RANK")
 
 with filter_col3:
@@ -192,8 +209,11 @@ if team != "All Teams":
 if num_players != "All Players":
     filtered_df = filtered_df.head(int(num_players))
 
-# --- Z-score color tiers (calculated on the top 200 players by rank, not the full pool) ---
-Z_COLUMNS = ["PTS_Z", "REB_Z", "AST_Z", "STL_Z", "BLK_Z", "3s_Z", "TO_Z", "FG%_Z", "FT%_Z", "TOTAL_Z"]
+# --- Score color tiers (calculated on the top 200 players by rank, not the full pool) ---
+Z_COLUMNS = [
+    f"PTS_{suffix}", f"REB_{suffix}", f"AST_{suffix}", f"STL_{suffix}", f"BLK_{suffix}",
+    f"3s_{suffix}", f"TO_{suffix}", f"FG%_{suffix}", f"FT%_{suffix}", f"TOTAL_{suffix}",
+]
 
 # Relevant player pool for percentile calculations
 color_pool = display_df.sort_values("RANK").head(200)
