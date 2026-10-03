@@ -339,6 +339,136 @@ def test_empty_roster_in_both_shapes_the_csv_can_produce():
         assert (totals[CAT_COLS] == 0).all().all()
 
 
+# ===========================================================================
+# Chunk 3 - games editor logic
+# ===========================================================================
+
+def editor_table(slot=1, overrides=None):
+    """The table the editor would show for one team, given saved overrides."""
+    stats = make_stats()
+    ov = overrides if overrides is not None else make_overrides()
+    games = wp.resolve_games_scheduled(stats, make_team_games(), ov, WEEK)
+    roster = make_roster()
+    return wp.build_games_editor_table(stats, roster[roster["TEAM_SLOT"] == slot], games)
+
+
+def with_games(table, player_id, value):
+    """Simulate someone typing `value` into one player's Games cell."""
+    out = table.copy()
+    out["GAMES_SCHEDULED"] = out["GAMES_SCHEDULED"].astype(float)   # the editor can hand back floats
+    out.loc[out["PLAYER_ID"] == player_id, "GAMES_SCHEDULED"] = value
+    return out
+
+
+def records(df):
+    return sorted((r.WEEK_START_DATE, int(r.PLAYER_ID), int(r.GAMES)) for r in df.itertuples(index=False))
+
+
+def test_editor_table_shows_only_active_players_of_that_team_in_roster_order():
+    t1 = editor_table(slot=1)
+    assert list(t1["PLAYER_NAME"]) == ["Alpha", "Bravo"]
+    t2 = editor_table(slot=2)
+    assert list(t2["PLAYER_NAME"]) == ["Charlie"]          # Delta is on IR -> hidden
+    assert list(t1.columns) == ["PLAYER_ID", "PLAYER_NAME", "TEAM_ABBREVIATION", "BASE_GAMES", "GAMES_SCHEDULED"]
+
+
+def test_editor_table_shows_schedule_and_current_number():
+    t = editor_table(slot=1, overrides=make_overrides([(WEEK, 2, 2)]))
+    bravo = t[t["PLAYER_ID"] == 2].iloc[0]
+    assert bravo["BASE_GAMES"] == 3 and bravo["GAMES_SCHEDULED"] == 2
+
+
+def test_editing_a_number_saves_an_override_for_that_player_only():
+    t = editor_table(slot=1)
+    new, changed = wp.apply_games_edits(make_overrides(), WEEK, with_games(t, 1, 2))
+    assert changed is True
+    assert records(new) == [(WEEK, 1, 2)]
+
+
+def test_zero_games_is_a_valid_override():
+    t = editor_table(slot=1)
+    new, _ = wp.apply_games_edits(make_overrides(), WEEK, with_games(t, 1, 0))
+    assert records(new) == [(WEEK, 1, 0)]
+
+
+def test_typing_the_schedule_number_back_removes_the_override():
+    ov = make_overrides([(WEEK, 2, 2)])
+    t = editor_table(slot=1, overrides=ov)
+    new, changed = wp.apply_games_edits(ov, WEEK, with_games(t, 2, 3))   # base is 3
+    assert changed is True
+    assert records(new) == []
+
+
+def test_clearing_the_cell_resets_the_override():
+    ov = make_overrides([(WEEK, 2, 2)])
+    t = editor_table(slot=1, overrides=ov)
+    new, changed = wp.apply_games_edits(ov, WEEK, with_games(t, 2, float("nan")))
+    assert changed is True and records(new) == []
+
+
+def test_untouched_table_reports_no_change_and_writes_no_rows():
+    new, changed = wp.apply_games_edits(make_overrides(), WEEK, editor_table(slot=1))
+    assert changed is False and new.empty
+
+    ov = make_overrides([(WEEK, 2, 2)])
+    new, changed = wp.apply_games_edits(ov, WEEK, editor_table(slot=1, overrides=ov))
+    assert changed is False and records(new) == [(WEEK, 2, 2)]
+
+
+def test_restating_the_schedule_number_with_no_override_is_not_a_change():
+    t = editor_table(slot=1)
+    _, changed = wp.apply_games_edits(make_overrides(), WEEK, with_games(t, 1, 3))   # base is 3
+    assert changed is False
+
+
+def test_other_weeks_and_other_players_are_left_alone():
+    ov = make_overrides([(NEXT_WEEK, 1, 1), (WEEK, 3, 0)])   # next week's + Charlie's (other team)
+    t = editor_table(slot=1, overrides=ov)
+    new, _ = wp.apply_games_edits(ov, WEEK, with_games(t, 1, 2))
+    assert records(new) == sorted([(NEXT_WEEK, 1, 1), (WEEK, 3, 0), (WEEK, 1, 2)])
+
+
+def test_editing_an_existing_override_updates_it_without_duplicating():
+    ov = make_overrides([(WEEK, 2, 2)])
+    t = editor_table(slot=1, overrides=ov)
+    new, changed = wp.apply_games_edits(ov, WEEK, with_games(t, 2, 1))
+    assert changed is True and records(new) == [(WEEK, 2, 1)]
+
+
+def test_invalid_numbers_are_rejected_and_nothing_is_modified():
+    ov = make_overrides([(WEEK, 2, 2)])
+    before = records(ov)
+    t = editor_table(slot=1, overrides=ov)
+    for bad in (-1, 2.5):
+        try:
+            wp.apply_games_edits(ov, WEEK, with_games(t, 1, bad))
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad} should have been rejected")
+    assert records(ov) == before
+
+
+def test_edit_then_save_then_reload_changes_the_resolved_games():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "games_overrides.csv"
+        ov = wp.load_games_overrides(path)
+        t = editor_table(slot=1)
+        new, changed = wp.apply_games_edits(ov, WEEK, with_games(t, 1, 1))
+        assert changed
+        wp.save_games_overrides(new, path)
+
+        reloaded = wp.load_games_overrides(path)
+        r = wp.resolve_games_scheduled(make_stats(), make_team_games(), reloaded, WEEK)
+        assert games_for(r, 1) == 1 and games_for(r, 2) == 3
+
+        # and resetting it empties the file's data rows again
+        t2 = editor_table(slot=1, overrides=reloaded)
+        cleared, changed = wp.apply_games_edits(reloaded, WEEK, with_games(t2, 1, 3))
+        assert changed
+        wp.save_games_overrides(cleared, path)
+        assert wp.load_games_overrides(path).empty
+
+
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """
-Weekly Projection - Games, Overrides + Projection Math (Chunks 1-2)
--------------------------------------------------------------------
+Weekly Projection - Games, Overrides, Projection Math + Editor Logic (Chunks 1-3)
+---------------------------------------------------------------------------------
 Answers one question for every player: "how many games will this
 player play in the current fantasy week?" The Weekly Projection table
 (built in later chunks) multiplies a player's season averages by this
@@ -66,6 +66,18 @@ Chunk 2 - projection math (the "why"):
   order, as the season compute_team_totals(). That means the existing
   build_matchup_comparison() can compare weekly totals as-is in chunk 4
   with no changes.
+
+Chunk 3 - editor logic (the "why"):
+
+- The editable table itself lives in 1_Roster_Tracker.py (Streamlit), but
+  the DECISIONS live here so they can be tested without Streamlit:
+  which rows to show (build_games_editor_table) and how an edited table
+  becomes saved overrides (apply_games_edits).
+
+- An override row is only ever stored when it DIFFERS from the schedule.
+  Typing the schedule's own number back in (or clearing the cell)
+  deletes the override. That keeps games_overrides.csv a short list of
+  genuine exceptions, and means "reset" needs no special button.
 
 File shapes:
   team_games_this_week.csv : TEAM_ABBREVIATION, WEEK_START_DATE, GAME_DATE
@@ -305,3 +317,112 @@ def compute_weekly_team_totals(projection: pd.DataFrame, teams: pd.DataFrame) ->
     totals[numeric_cols] = totals[numeric_cols].fillna(0)
 
     return totals.round(3)
+
+
+# ---------------------------------------------------------------------------
+# Games editor logic (Chunk 3) - the Streamlit-free half of the editable table
+# ---------------------------------------------------------------------------
+
+def build_games_editor_table(
+    raw_stats: pd.DataFrame,
+    team_roster: pd.DataFrame,
+    games: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    The rows shown in ONE team's games editor: its active (non-IR)
+    players, in the order they were added to the roster.
+
+    team_roster : roster rows for a single team (TEAM_SLOT, PLAYER_ID, IS_IR).
+    games       : output of resolve_games_scheduled().
+
+    Columns:
+      PLAYER_ID, PLAYER_NAME, TEAM_ABBREVIATION - who
+      BASE_GAMES      - what the schedule says (shown read-only)
+      GAMES_SCHEDULED - the number being used right now (override if set).
+                        This is the column the person edits.
+
+    IR players are left out on purpose: they don't count towards team
+    totals, so their games don't matter until they come off IR (and any
+    override already saved for them is kept, not lost).
+    """
+    active = team_roster[~team_roster["IS_IR"].astype(bool)][["PLAYER_ID"]].copy()
+    active["PLAYER_ID"] = active["PLAYER_ID"].astype("int64")
+
+    table = active.merge(
+        raw_stats[["PLAYER_ID", "PLAYER_NAME", "TEAM_ABBREVIATION"]], on="PLAYER_ID", how="left"
+    ).merge(
+        games[["PLAYER_ID", "BASE_GAMES", "GAMES_SCHEDULED"]], on="PLAYER_ID", how="left"
+    )
+
+    # A rostered player we have no stats/schedule row for can't be edited
+    # meaningfully, so leave them out of the editor rather than show blanks.
+    table = table.dropna(subset=["PLAYER_NAME", "BASE_GAMES", "GAMES_SCHEDULED"]).reset_index(drop=True)
+    table["BASE_GAMES"] = table["BASE_GAMES"].astype(int)
+    table["GAMES_SCHEDULED"] = table["GAMES_SCHEDULED"].astype(int)
+    return table
+
+
+def _override_records(overrides: pd.DataFrame) -> list:
+    """Order-independent, dtype-independent view of the overrides, used
+    to answer 'did anything actually change?'."""
+    return sorted(
+        (row.WEEK_START_DATE, int(row.PLAYER_ID), int(row.GAMES))
+        for row in overrides.itertuples(index=False)
+    )
+
+
+def apply_games_edits(
+    overrides: pd.DataFrame,
+    week_start: date,
+    edited: pd.DataFrame,
+) -> tuple[pd.DataFrame, bool]:
+    """
+    Turns an edited games table into the updated overrides table.
+
+    edited : the table coming back from the editor - needs PLAYER_ID,
+             BASE_GAMES and GAMES_SCHEDULED (the possibly-edited number).
+
+    Rules, applied per edited player (for `week_start` only):
+      - edited number differs from BASE_GAMES -> save an override
+      - edited number equals BASE_GAMES        -> NO override (and any
+        existing one is removed - typing the schedule's own number back
+        in is how you "reset")
+      - edited number left blank               -> also a reset
+    Overrides for other weeks, and for players not in `edited`, are left
+    exactly as they were.
+
+    Returns (new_overrides, changed). `changed` lets the UI skip writing
+    to disk (and skip a page rerun) when an edit changed nothing.
+    Raises ValueError for negative or fractional game counts; the input
+    `overrides` is never modified.
+    """
+    touched_ids = []
+    upserts = []
+
+    for row in edited.itertuples(index=False):
+        player_id = int(row.PLAYER_ID)
+        base = int(row.BASE_GAMES)
+        value = row.GAMES_SCHEDULED
+        touched_ids.append(player_id)
+
+        if pd.isna(value):
+            continue  # blank -> reset to schedule
+        if float(value) < 0 or not float(value).is_integer():
+            raise ValueError(f"Games must be a whole number, 0 or more (got {value!r}).")
+        if int(value) != base:
+            upserts.append({"WEEK_START_DATE": week_start, "PLAYER_ID": player_id, "GAMES": int(value)})
+
+    # Drop this week's existing rows for every player we just looked at,
+    # then add back only the ones that still differ from the schedule.
+    is_touched = (overrides["WEEK_START_DATE"] == week_start) & overrides["PLAYER_ID"].isin(touched_ids)
+    new = overrides[~is_touched]
+    if upserts:
+        new = pd.concat([new, pd.DataFrame(upserts, columns=OVERRIDE_COLUMNS)], ignore_index=True)
+
+    new = new[OVERRIDE_COLUMNS].copy()
+    new["PLAYER_ID"] = new["PLAYER_ID"].astype("int64")
+    new["GAMES"] = new["GAMES"].astype("int64")
+    new = new.sort_values(["WEEK_START_DATE", "PLAYER_ID"]).reset_index(drop=True)
+
+    changed = _override_records(overrides) != _override_records(new)
+    return new, changed

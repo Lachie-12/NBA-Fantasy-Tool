@@ -49,12 +49,35 @@ Design notes (the "why"):
   hobby tool with no connection to whatever platform (ESPN, etc.) your
   real league runs on, so who you're facing is something you tell it,
   not something it looks up.
+
+- GAMES THIS WEEK (Match Up tab): under the season comparison, each of
+  the two teams in the matchup gets a small editable table showing how
+  many games each active player has this fantasy week. The "Scheduled"
+  column comes from team_games_this_week.csv (pull_team_schedule.py);
+  the "Games" column is yours to change -- e.g. drop a player from 3 to
+  2 if you expect him to sit one end of a back-to-back. Only numbers
+  that DIFFER from the schedule are saved (to games_overrides.csv, keyed
+  by week + player), so putting the scheduled number back undoes the
+  override. All the decisions about what to show and what to save live
+  in weekly_projection.py, where they're unit tested without Streamlit;
+  this page just draws the table and passes edits through.
 """
 
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+from pull_team_schedule import get_current_week_bounds
+from weekly_projection import (
+    apply_games_edits,
+    build_games_editor_table,
+    load_games_overrides,
+    load_team_games_this_week,
+    resolve_games_scheduled,
+    save_games_overrides,
+    schedule_week_matches,
+)
 
 st.set_page_config(layout="wide", page_title="Roster Tracker")
 
@@ -397,3 +420,72 @@ with tabs[-1]:
     opp_cat_wins = (comparison["Winner"] == opp_pick).sum()
     st.caption(f"Projected category count: **{my_name} {my_cat_wins} - {opp_cat_wins} {opp_pick}** "
                f"(based on current season totals, not adjusted for the matchup week specifically).")
+
+    # --- Games this week: scheduled games + your manual overrides ---
+    st.markdown("#### Games this week")
+    week_start, week_end = get_current_week_bounds()
+    team_games = load_team_games_this_week()
+
+    # A stale schedule file would show 0 games for everyone, so say so
+    # instead of letting people edit against meaningless numbers.
+    if not schedule_week_matches(team_games, week_start):
+        st.warning(
+            f"The saved schedule doesn't cover this fantasy week ({week_start:%d %b} - {week_end:%d %b}). "
+            "Run pull_team_schedule.py to refresh it, then reload this page."
+        )
+        st.stop()
+
+    overrides = load_games_overrides()
+    games = resolve_games_scheduled(raw_stats, team_games, overrides, week_start)
+
+    st.caption(
+        f"Fantasy week {week_start:%d %b} - {week_end:%d %b}. Change a player's number to override how many "
+        "games they play (e.g. sitting one end of a back-to-back). Put the scheduled number back to undo it. "
+        "IR players aren't shown."
+    )
+
+    editor_cols = st.columns(2)
+    for col, slot, name in (
+        (editor_cols[0], my_slot, my_name),
+        (editor_cols[1], team_options[opp_pick], opp_pick),
+    ):
+        with col:
+            st.markdown(f"**{name}**")
+            table = build_games_editor_table(raw_stats, roster[roster["TEAM_SLOT"] == slot], games)
+            if table.empty:
+                st.caption("No active players on this team.")
+                continue
+
+            # The widget key includes a fingerprint of the table's current
+            # contents. Whenever a save changes those contents the key
+            # changes too, so Streamlit starts a fresh editor instead of
+            # replaying old edits on top of new data (which could land a
+            # stale edit on the wrong player after the roster changes).
+            fingerprint = hash(tuple(zip(table["PLAYER_ID"], table["BASE_GAMES"], table["GAMES_SCHEDULED"])))
+            edited = st.data_editor(
+                table,
+                key=f"games_editor_{slot}_{week_start}_{fingerprint}",
+                hide_index=True,
+                width="stretch",
+                disabled=["PLAYER_NAME", "TEAM_ABBREVIATION", "BASE_GAMES"],
+                column_config={
+                    "PLAYER_ID": None,  # needed for saving, hidden from view
+                    "PLAYER_NAME": st.column_config.TextColumn("Player"),
+                    "TEAM_ABBREVIATION": st.column_config.TextColumn("Team"),
+                    "BASE_GAMES": st.column_config.NumberColumn("Scheduled", format="%d"),
+                    "GAMES_SCHEDULED": st.column_config.NumberColumn(
+                        "Games", min_value=0, max_value=7, step=1, format="%d",
+                        help="Games this player will play this week. Clear the cell or enter the "
+                             "scheduled number to remove your override.",
+                    ),
+                },
+            )
+
+            try:
+                new_overrides, changed = apply_games_edits(overrides, week_start, edited)
+            except ValueError as e:
+                st.error(str(e))
+            else:
+                if changed:
+                    save_games_overrides(new_overrides)
+                    st.rerun()
