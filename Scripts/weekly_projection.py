@@ -1,6 +1,6 @@
 """
-Weekly Projection - Games Scheduled + Manual Overrides (Chunk 1)
------------------------------------------------------------------
+Weekly Projection - Games, Overrides + Projection Math (Chunks 1-2)
+-------------------------------------------------------------------
 Answers one question for every player: "how many games will this
 player play in the current fantasy week?" The Weekly Projection table
 (built in later chunks) multiplies a player's season averages by this
@@ -43,6 +43,29 @@ Design notes (the "why"):
 - The week is passed IN (as a date) rather than worked out in here. That
   keeps these functions deterministic and testable. The real app will
   get it from pull_team_schedule.get_current_week_bounds().
+
+Chunk 2 - projection math (the "why"):
+
+- A player's weekly projection is simply per-game average x games
+  scheduled. Counting stats (PTS, REB, ...) and the shooting
+  components (FGM, FGA, FTM, FTA) are all scaled the same way, so a
+  3-game week gives roughly triple a 1-game week.
+
+- Weekly FG% / FT% are NOT scaled and NOT averaged. They're rebuilt
+  from the scaled makes and attempts: team FG% = sum of FGM / sum of
+  FGA across active players. This is the same volume-weighted approach
+  compute_team_totals() in 1_Roster_Tracker.py uses for season totals
+  (a bench player shooting 1/1 shouldn't count as much as a starter
+  shooting 8/16) - and a player with 4 games now rightly carries more
+  weight than one with 2.
+
+- IR players stay in the per-player table (flagged) but are left out of
+  team totals, exactly as they are in the season League Totals.
+
+- compute_weekly_team_totals() returns the SAME columns, in the same
+  order, as the season compute_team_totals(). That means the existing
+  build_matchup_comparison() can compare weekly totals as-is in chunk 4
+  with no changes.
 
 File shapes:
   team_games_this_week.csv : TEAM_ABBREVIATION, WEEK_START_DATE, GAME_DATE
@@ -200,3 +223,85 @@ def resolve_games_scheduled(
         .astype(int)
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Weekly projection math (Chunk 2)
+# ---------------------------------------------------------------------------
+
+# Stats that scale with the number of games played.
+WEEKLY_COUNT_COLS = ["PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV"]
+# Kept as raw makes/attempts so team percentages can be rebuilt properly.
+WEEKLY_SHOOTING_COLS = ["FGM", "FGA", "FTM", "FTA"]
+WEEKLY_SUM_COLS = WEEKLY_COUNT_COLS + WEEKLY_SHOOTING_COLS
+
+_GAMES_COLS = ["BASE_GAMES", "OVERRIDE_GAMES", "IS_OVERRIDDEN", "GAMES_SCHEDULED"]
+
+
+def compute_weekly_projection(
+    raw_stats: pd.DataFrame,
+    roster: pd.DataFrame,
+    games: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    One row per ROSTERED player: their season per-game averages multiplied
+    by games scheduled this week.
+
+    raw_stats : season per-game stats (player_stats_2025-26.csv).
+    roster    : TEAM_SLOT, PLAYER_ID, IS_IR (roster_assignments.csv).
+    games     : output of resolve_games_scheduled() - run it on ALL
+                players in raw_stats so every rostered player is covered.
+
+    In the result, PTS/REB/AST/STL/BLK/FG3M/TOV and FGM/FGA/FTM/FTA are
+    WEEKLY projected totals (not per-game). FG_PCT / FT_PCT stay as the
+    player's own season percentage, for display only - team percentages
+    are rebuilt from makes/attempts in compute_weekly_team_totals().
+    """
+    # Force clean types up front: an empty roster file reads back from CSV
+    # with float/object columns, which can break joins or groupbys later.
+    roster = roster.copy()
+    roster["TEAM_SLOT"] = roster["TEAM_SLOT"].astype("int64")
+    roster["PLAYER_ID"] = roster["PLAYER_ID"].astype("int64")
+    roster["IS_IR"] = roster["IS_IR"].astype(bool)
+
+    stat_cols = ["PLAYER_ID", "PLAYER_NAME", "TEAM_ABBREVIATION"] + WEEKLY_SUM_COLS + ["FG_PCT", "FT_PCT"]
+    projection = roster.merge(raw_stats[stat_cols], on="PLAYER_ID", how="left")
+    projection = projection.merge(games[["PLAYER_ID"] + _GAMES_COLS], on="PLAYER_ID", how="left")
+
+    # A rostered player with no schedule info at all gets 0 games rather
+    # than a blank that would silently poison later maths.
+    projection["BASE_GAMES"] = projection["BASE_GAMES"].fillna(0).astype(int)
+    projection["GAMES_SCHEDULED"] = projection["GAMES_SCHEDULED"].fillna(0).astype(int)
+    projection["IS_OVERRIDDEN"] = projection["IS_OVERRIDDEN"].eq(True)
+
+    # per-game average x games = projected weekly total
+    for col in WEEKLY_SUM_COLS:
+        projection[col] = projection[col] * projection["GAMES_SCHEDULED"]
+
+    return projection
+
+
+def compute_weekly_team_totals(projection: pd.DataFrame, teams: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per team: projected weekly totals across ACTIVE (non-IR)
+    players. Same columns, same order, and same volume-weighted FG%/FT%
+    treatment as compute_team_totals() in 1_Roster_Tracker.py - so
+    build_matchup_comparison() works on this output unchanged.
+
+    A team with no active players, or whose players all have 0 games,
+    shows 0 everywhere (including the percentages) rather than blanks -
+    matching how the season League Totals table already behaves.
+    """
+    active = projection[~projection["IS_IR"]]
+
+    totals = active.groupby("TEAM_SLOT")[WEEKLY_SUM_COLS].sum()
+    totals["FG_PCT"] = totals["FGM"] / totals["FGA"]
+    totals["FT_PCT"] = totals["FTM"] / totals["FTA"]
+    totals = totals.drop(columns=WEEKLY_SHOOTING_COLS).reset_index()
+
+    totals = teams.merge(totals, on="TEAM_SLOT", how="left")
+
+    numeric_cols = [c for c in totals.columns if c not in ("TEAM_SLOT", "TEAM_NAME")]
+    totals[numeric_cols] = totals[numeric_cols].fillna(0)
+
+    return totals.round(3)
